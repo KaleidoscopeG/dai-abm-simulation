@@ -1,0 +1,33 @@
+dai-stability-simulation/
+│
+├── README.md
+├── requirements.txt
+├── config/
+│   └── baseline.yaml
+│
+├── data/
+│   └── raw/
+│
+├── notebooks/
+│   ├── 01_baseline_run.ipynb
+│   ├── 02_stress_tests.ipynb
+│   └── 03_results_analysis.ipynb
+│
+├── src/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── price_process.py
+│   ├── vault.py
+│   ├── agents.py
+│   ├── dai_market.py
+│   ├── liquidation.py
+│   ├── confidence.py
+│   ├── simulation.py
+│   └── metrics.py
+│
+├── outputs/
+│   ├── figures/
+│   └── results/
+│
+└── tests/
+    └── test_vault.py

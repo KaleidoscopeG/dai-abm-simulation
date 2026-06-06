@@ -1,0 +1,15 @@
+name: dai-sim
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - jupyterlab
+  - scipy
+  - matplotlib
+  - pandas
+  - tqdm
+  - pyyaml
+  - numpy
+  - plotly
+  - pytest
+  - statsmodels
