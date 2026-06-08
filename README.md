@@ -2,7 +2,7 @@
 
 This project develops a simplified agent-based simulation of DAI stability under stress. The aim is to investigate how the DAI peg may be affected by ETH collateral shocks when liquidation frictions, keeper incentives, and state-dependent market confidence are explicitly represented in a computational model.
 
-The project does not attempt to reproduce the full MakerDAO protocol. Instead, it focuses on a simplified but interpretable simulation framework that captures the key mechanisms most relevant to DAI peg stability.
+The project does not attempt to reproduce the full MakerDAO protocol. It focuses on a simplified but interpretable simulation framework that captures the key mechanisms most relevant to DAI peg stability.
 
 ## Project Motivation
 
