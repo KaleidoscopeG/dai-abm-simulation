@@ -298,10 +298,30 @@ def run_simulation_with_price_path(
         )
 
         # Update DAI market price using confidence state
+        # Additional system-level selling pressure from liquidation stress.
+        # This links vault-system stress directly to DAI market confidence.
+        if pre_summary["total_debt_active"] > 0:
+            bad_debt_ratio = (
+                    pre_summary["total_bad_debt_active"] / pre_summary["total_debt_active"]
+            )
+        else:
+            bad_debt_ratio = 0.0
+
+        systemic_stress_pressure = (
+                # was 0.02 * share_liquidatable + 2.0 * bad_debt_ratio but final DAI price depegged too much
+                0.005 * pre_summary["share_liquidatable"]
+                + 0.5 * bad_debt_ratio
+        )
+
+        combined_panic_pressure = (
+                confidence_state_before["panic_selling_pressure"]
+                + systemic_stress_pressure
+        )
+
         new_dai_price, dai_pressures = update_dai_price(
             dai_price=dai_price,
             confidence=confidence_state_before["confidence"],
-            panic_selling_pressure=confidence_state_before["panic_selling_pressure"],
+            panic_selling_pressure=combined_panic_pressure,
             market_config=dai_market_config,
             rng=rng,
         )
@@ -391,6 +411,9 @@ def run_simulation_with_price_path(
             "collateral_liquidated_cumulative": cumulative_collateral_liquidated,
             "bad_debt_realised_cumulative": cumulative_bad_debt_realised,
             "unprofitable_liquidations_cumulative": cumulative_unprofitable_attempts,
+            "bad_debt_ratio": bad_debt_ratio,
+            "systemic_stress_pressure": systemic_stress_pressure,
+            "combined_panic_pressure": combined_panic_pressure,
         }
 
         records.append(record)
@@ -557,7 +580,7 @@ if __name__ == "__main__":
         price_adjustment_speed=0.02,
         arbitrage_strength=1.0,
         above_peg_supply_strength=1.0,
-        panic_strength=1.0,
+        panic_strength=0.5, # was 1.0
         noise_std=0.0005,
         min_price=0.50,
         max_price=1.50,
