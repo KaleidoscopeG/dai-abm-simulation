@@ -25,6 +25,18 @@ from typing import Optional
 
 import pandas as pd
 
+import numpy as np
+
+from confidence import (
+    ConfidenceConfig,
+    get_confidence_state,
+)
+
+from dai_market import (
+    DAIMarketConfig,
+    update_dai_price,
+)
+
 from price_process import (
     PriceProcessConfig,
     generate_constant_price_path,
@@ -198,10 +210,19 @@ def run_simulation_with_price_path(
     config: SimulationConfig,
     price_path: pd.DataFrame,
     liquidation_config: LiquidationConfig,
+    confidence_config: ConfidenceConfig | None = None,
+    dai_market_config: DAIMarketConfig | None = None,
+    initial_dai_price: float = 1.0,
     execute_liquidations: bool = True,
 ) -> pd.DataFrame:
     """
     Run the simulation using a provided ETH price path.
+
+    This version includes:
+    - vault dynamics;
+    - keeper liquidations;
+    - confidence regime;
+    - DAI market price updates.
 
     Parameters
     ----------
@@ -211,6 +232,12 @@ def run_simulation_with_price_path(
         DataFrame containing columns 'step' and 'eth_price'.
     liquidation_config:
         LiquidationConfig object.
+    confidence_config:
+        ConfidenceConfig object. If None, default config is used.
+    dai_market_config:
+        DAIMarketConfig object. If None, default config is used.
+    initial_dai_price:
+        Initial DAI market price.
     execute_liquidations:
         Whether keepers should actually execute profitable liquidations.
 
@@ -222,14 +249,29 @@ def run_simulation_with_price_path(
     config.validate()
     liquidation_config.validate()
 
+    if confidence_config is None:
+        confidence_config = ConfidenceConfig()
+    if dai_market_config is None:
+        dai_market_config = DAIMarketConfig()
+
+    confidence_config.validate()
+    dai_market_config.validate()
+
+    if initial_dai_price <= 0:
+        raise ValueError("initial_dai_price must be positive.")
+
     required_cols = {"step", "eth_price"}
     missing_cols = required_cols - set(price_path.columns)
     if missing_cols:
         raise ValueError(f"price_path is missing columns: {missing_cols}")
 
+    rng = np.random.default_rng(config.random_seed)
+
     vaults = create_initial_vaults(config)
 
     records = []
+
+    dai_price = initial_dai_price
 
     cumulative_keeper_profit = 0.0
     cumulative_debt_repaid = 0.0
@@ -241,12 +283,31 @@ def run_simulation_with_price_path(
         step = int(row["step"])
         eth_price = float(row["eth_price"])
 
-        # State before keeper action
+        # State before keeper action and before DAI price update
         pre_summary = summarise_vault_system(
             vaults=vaults,
             eth_price=eth_price,
             step=step,
         )
+
+        confidence_state_before = get_confidence_state(
+            dai_price=dai_price,
+            share_liquidatable=pre_summary["share_liquidatable"],
+            active_bad_debt=pre_summary["total_bad_debt_active"],
+            config=confidence_config,
+        )
+
+        # Update DAI market price using confidence state
+        new_dai_price, dai_pressures = update_dai_price(
+            dai_price=dai_price,
+            confidence=confidence_state_before["confidence"],
+            panic_selling_pressure=confidence_state_before["panic_selling_pressure"],
+            market_config=dai_market_config,
+            rng=rng,
+        )
+
+        dai_price_before = dai_price
+        dai_price = new_dai_price
 
         liquidation_summary = {
             "n_attempted": 0,
@@ -285,8 +346,36 @@ def run_simulation_with_price_path(
             step=step,
         )
 
+        confidence_state_after = get_confidence_state(
+            dai_price=dai_price,
+            share_liquidatable=post_summary["share_liquidatable"],
+            active_bad_debt=post_summary["total_bad_debt_active"],
+            config=confidence_config,
+        )
+
         record = {
             **post_summary,
+            "dai_price_before": dai_price_before,
+            "dai_price": dai_price,
+            "dai_price_change": dai_price - dai_price_before,
+            "regime_before": confidence_state_before["regime"],
+            "confidence_before": confidence_state_before["confidence"],
+            "panic_selling_pressure_before": confidence_state_before[
+                "panic_selling_pressure"
+            ],
+            "regime_after": confidence_state_after["regime"],
+            "confidence_after": confidence_state_after["confidence"],
+            "panic_selling_pressure_after": confidence_state_after[
+                "panic_selling_pressure"
+            ],
+            "dai_demand_pressure": dai_pressures["demand_pressure"],
+            "dai_above_peg_supply_pressure": dai_pressures[
+                "above_peg_supply_pressure"
+            ],
+            "dai_panic_pressure": dai_pressures["panic_pressure"],
+            "dai_total_supply_pressure": dai_pressures["total_supply_pressure"],
+            "dai_net_pressure": dai_pressures["net_pressure"],
+            "dai_price_noise": dai_pressures["price_noise"],
             "n_liquidatable_before_liquidation": pre_summary["n_liquidatable"],
             "n_attempted_liquidations": int(liquidation_summary["n_attempted"]),
             "n_successful_liquidations": int(liquidation_summary["n_liquidated"]),
@@ -312,6 +401,9 @@ def run_simulation_with_price_path(
 def run_constant_price_simulation(
     config: SimulationConfig,
     liquidation_config: LiquidationConfig,
+    confidence_config: ConfidenceConfig | None = None,
+    dai_market_config: DAIMarketConfig | None = None,
+    initial_dai_price: float = 1.0,
     execute_liquidations: bool = True,
 ) -> pd.DataFrame:
     """
@@ -330,6 +422,9 @@ def run_constant_price_simulation(
         config=config,
         price_path=price_path,
         liquidation_config=liquidation_config,
+        confidence_config=confidence_config,
+        dai_market_config=dai_market_config,
+        initial_dai_price=initial_dai_price,
         execute_liquidations=execute_liquidations,
     )
 
@@ -337,8 +432,11 @@ def run_constant_price_simulation(
 def run_shock_simulation(
     config: SimulationConfig,
     liquidation_config: LiquidationConfig,
+    confidence_config: ConfidenceConfig | None = None,
+    dai_market_config: DAIMarketConfig | None = None,
     shock_time: int = 50,
     shock_size: float = -0.43,
+    initial_dai_price: float = 1.0,
     execute_liquidations: bool = True,
 ) -> pd.DataFrame:
     """
@@ -378,6 +476,9 @@ def run_shock_simulation(
         config=config,
         price_path=price_path,
         liquidation_config=liquidation_config,
+        confidence_config=confidence_config,
+        dai_market_config=dai_market_config,
+        initial_dai_price=initial_dai_price,
         execute_liquidations=execute_liquidations,
     )
 
@@ -385,33 +486,16 @@ def run_shock_simulation(
 def run_gbm_simulation(
     config: SimulationConfig,
     liquidation_config: LiquidationConfig,
+    confidence_config: ConfidenceConfig | None = None,
+    dai_market_config: DAIMarketConfig | None = None,
     mu: float = 0.0,
     sigma: float = 0.80,
     dt: float = 1 / 365,
+    initial_dai_price: float = 1.0,
     execute_liquidations: bool = True,
 ) -> pd.DataFrame:
     """
     Run simulation with GBM ETH price path.
-
-    Parameters
-    ----------
-    config:
-        SimulationConfig object.
-    liquidation_config:
-        LiquidationConfig object.
-    mu:
-        Annualised drift.
-    sigma:
-        Annualised volatility.
-    dt:
-        Time step size.
-    execute_liquidations:
-        Whether to execute profitable liquidations.
-
-    Returns
-    -------
-    pd.DataFrame
-        System-level simulation results.
     """
     price_config = PriceProcessConfig(
         n_steps=config.n_steps,
@@ -429,6 +513,9 @@ def run_gbm_simulation(
         config=config,
         price_path=price_path,
         liquidation_config=liquidation_config,
+        confidence_config=confidence_config,
+        dai_market_config=dai_market_config,
+        initial_dai_price=initial_dai_price,
         execute_liquidations=execute_liquidations,
     )
 
@@ -445,13 +532,6 @@ if __name__ == "__main__":
         random_seed=42,
     )
 
-    low_gas_config = LiquidationConfig(
-        liquidation_penalty=0.13,
-        gas_cost=100.0,
-        risk_cost_rate=0.00,
-        max_close_factor=1.0,
-    )
-
     high_gas_config = LiquidationConfig(
         liquidation_penalty=0.13,
         gas_cost=700.0,
@@ -459,43 +539,59 @@ if __name__ == "__main__":
         max_close_factor=1.0,
     )
 
-    low_gas_results = run_shock_simulation(
-        config=sim_config,
-        liquidation_config=low_gas_config,
-        shock_time=30,
-        shock_size=-0.43,
-        execute_liquidations=True,
+    confidence_config = ConfidenceConfig(
+        normal_lower_price=0.99,
+        normal_upper_price=1.01,
+        stress_lower_price=0.97,
+        max_normal_liquidatable_share=0.05,
+        max_stress_liquidatable_share=0.30,
+        bad_debt_panic_threshold=1_000.0,
+        normal_confidence=1.0,
+        stress_confidence=0.5,
+        panic_confidence=0.1,
+        panic_selling_multiplier=2.0,
     )
 
-    high_gas_results = run_shock_simulation(
+    dai_market_config = DAIMarketConfig(
+        peg_price=1.0,
+        price_adjustment_speed=0.02,
+        arbitrage_strength=1.0,
+        above_peg_supply_strength=1.0,
+        panic_strength=1.0,
+        noise_std=0.0005,
+        min_price=0.50,
+        max_price=1.50,
+    )
+
+    results = run_shock_simulation(
         config=sim_config,
         liquidation_config=high_gas_config,
+        confidence_config=confidence_config,
+        dai_market_config=dai_market_config,
         shock_time=30,
         shock_size=-0.43,
+        initial_dai_price=1.0,
         execute_liquidations=True,
     )
 
     columns_to_show = [
         "step",
         "eth_price",
+        "dai_price",
+        "regime_before",
+        "regime_after",
         "n_vaults_active",
         "n_liquidatable_before_liquidation",
         "n_successful_liquidations",
         "n_unprofitable_liquidations",
-        "n_liquidatable",
         "total_bad_debt_active",
+        "dai_net_pressure",
         "keeper_profit_cumulative",
         "bad_debt_realised_cumulative",
     ]
 
-    print("Low gas results around shock:")
-    print(low_gas_results.loc[27:34, columns_to_show])
+    print("Results around shock:")
+    print(results.loc[27:40, columns_to_show])
 
-    print("\nHigh gas results around shock:")
-    print(high_gas_results.loc[27:34, columns_to_show])
-
-    print("\nLow gas final row:")
-    print(low_gas_results.tail(1)[columns_to_show].T)
-
-    print("\nHigh gas final row:")
-    print(high_gas_results.tail(1)[columns_to_show].T)
+    print("\nFinal row:")
+    print(results.tail(1)[columns_to_show].T)
